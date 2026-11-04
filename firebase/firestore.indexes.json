@@ -1,0 +1,10 @@
+{
+  "indexes": [
+    { "collectionGroup": "lessons", "queryScope": "COLLECTION_GROUP", "fields": [
+      { "fieldPath": "visibility", "order": "ASCENDING" },
+      { "fieldPath": "courseId", "order": "ASCENDING" },
+      { "fieldPath": "order", "order": "ASCENDING" }
+    ] }
+  ],
+  "fieldOverrides": []
+}
