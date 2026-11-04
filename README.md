@@ -1,4 +1,4 @@
-# Universidade Livre de Teologia
+# Free University of Theology
 
 MVP de uma plataforma gratuita de cursos livres em teologia. O projeto trata a leitura como centro da aula, não cria paywall e separa cuidadosamente o catálogo planejado do conteúdo realmente publicado.
 
