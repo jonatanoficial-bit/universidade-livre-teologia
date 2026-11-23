@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 - 2026-11-23
+
+- Área docente conectada ao Supabase para criar módulos e aulas por curso, com rascunho ou publicação imediata.
+- Aulas publicadas passam a aparecer no catálogo e no leitor para visitantes e estudantes, sem depender do navegador do professor.
+- Regras RLS permitem publicação apenas por docentes nos cursos atribuídos e preservam a leitura pública apenas para material publicado.
+- Títulos das 24 disciplinas corrigidos conforme a matriz curricular de referência.
+- Editor docente redesenhado com uma experiência editorial mais rica e orientada à publicação.
+
 ## 0.1.0 - 2026-11-04
 
 - Primeiro MVP público da Universidade Livre de Teologia.

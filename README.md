@@ -13,8 +13,9 @@ MVP de uma plataforma gratuita de cursos livres em teologia. O projeto trata a l
 - Leitor com índice, navegação entre aulas, tamanho de fonte, tema, progresso e anotações sincronizáveis por conta.
 - Vídeo do YouTube opcional e seguro: aceita apenas ID ou URL HTTPS de domínios YouTube, cria player após clique e mantém link alternativo para a origem.
 - Painel editorial demonstrativo: novo curso, módulo, aula por blocos estruturados, rascunho, prévia, publicação/despublicação, importação e exportação JSON.
+- Área docente conectada: professor autorizado cria módulo e aula, adiciona objetivos, referências e vídeo complementar e publica diretamente no curso.
 - PWA simples com cache local do shell do app, manifesto e ícone próprio.
-- Migração Supabase com Auth, RLS, progresso, anotações, tentativas e fila de avaliação docente, além do workflow de deploy para GitHub Pages.
+- Migrações Supabase com Auth, RLS, progresso, anotações, tentativas, fila de avaliação docente e publicação compartilhada, além do workflow de deploy para GitHub Pages.
 
 ## Executar localmente
 
@@ -51,18 +52,20 @@ pnpm run build
 ### Professora ou professor
 
 1. Um administrador atribui o papel `teacher` e os cursos sob sua responsabilidade.
-2. Entre normalmente e abra **Avaliações**.
-3. Leia cada tentativa autorizada e publique uma devolutiva acadêmica para o estudante.
+2. Entre normalmente e abra **Conteúdos**.
+3. Escolha um curso atribuído, use um módulo existente ou crie um novo e preencha a aula.
+4. Marque **Publicar para todos os alunos** e salve. A aula passa a aparecer na página pública do curso e no leitor.
+5. Em **Avaliações**, leia cada tentativa autorizada e publique uma devolutiva acadêmica para o estudante.
 
 ## Autenticação e persistência
 
 O app usa Supabase Auth (e-mail/senha) e PostgreSQL quando as variáveis públicas do cliente e a migração estão configuradas. A tela de acesso informa claramente quando a conexão ainda não foi ativada; não existe mais atalho de "conta demonstrativa".
 
-O banco aplica Row Level Security: estudantes só veem e alteram registros próprios; docentes só leem e avaliam tentativas dos cursos que lhes foram atribuídos; papéis são definidos no banco, nunca no `user_metadata` ou no navegador. A emissão de certificados continua deliberadamente local e marcada como demonstração.
+O banco aplica Row Level Security: estudantes só veem e alteram registros próprios; docentes só leem, avaliam e publicam conteúdo nos cursos que lhes foram atribuídos; visitantes e estudantes só leem aulas efetivamente publicadas. Papéis são definidos no banco, nunca no `user_metadata` ou no navegador. A emissão de certificados continua deliberadamente local e marcada como demonstração.
 
 ## Ativação em produção
 
-1. No Supabase, ative ou crie um projeto e aplique `supabase/migrations/20261123120905_learning_identity_and_assessments.sql` com `supabase db push` depois de vinculá-lo pela CLI.
+1. No Supabase, ative ou crie um projeto e aplique as migrações em `supabase/migrations/` com `supabase db push` depois de vinculá-lo pela CLI. A publicação docente usa a migração `20261123172000_teacher_content_publication.sql`.
 2. Em **Auth → URL configuration**, configure o Site URL e adicione `https://jonatanoficial-bit.github.io/universidade-livre-teologia/` às Redirect URLs.
 3. Copie `.env.example` para `.env.local` e preencha somente `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`. Nunca use no frontend uma chave `service_role` ou secreta.
 4. Em GitHub → **Settings → Secrets and variables → Actions → Variables**, crie `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`. O workflow já usa essas variáveis na compilação do Pages.
@@ -78,8 +81,8 @@ O painel exporta o formato completo em JSON. Para importar, o arquivo precisa co
 
 - Validação de URL impede `javascript:`, iframes colados e hosts que não sejam YouTube.
 - Links externos devem usar `rel="noopener noreferrer"`.
-- As políticas RLS do Supabase recusam elevação de papel no cliente e separam os dados de estudantes da fila docente.
-- Anotações, progresso e tentativas pertencem exclusivamente ao respectivo UID; professores acessam apenas as tentativas dos cursos atribuídos.
+- As políticas RLS do Supabase recusam elevação de papel no cliente, separam os dados de estudantes da fila docente e restringem a publicação aos cursos atribuídos.
+- Anotações, progresso e tentativas pertencem exclusivamente ao respectivo UID; professores acessam apenas as tentativas e o conteúdo dos cursos atribuídos.
 - O cache PWA é apenas para assets estáticos e não promete vídeo offline nem substitui backup.
 
 ## Decisões de produto

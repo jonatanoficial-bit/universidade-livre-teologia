@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import type { ContentBlock } from "../data";
 
 export type AppRole = "student" | "teacher" | "editor" | "admin";
 
@@ -18,6 +19,34 @@ export type TeacherAttempt = {
   teacher_feedback: string | null;
   reviewer_id: string | null;
   reviewed_at: string | null;
+};
+
+export type EditorialModule = {
+  id: string;
+  course_id: string;
+  title: string;
+  summary: string;
+  position: number;
+  created_by: string;
+  updated_at: string;
+};
+
+export type EditorialLesson = {
+  id: string;
+  course_id: string;
+  module_id: string;
+  position: number;
+  slug: string;
+  title: string;
+  intro: string;
+  objectives: string[];
+  content_blocks: ContentBlock[];
+  source_references: string[];
+  estimated_minutes: number;
+  youtube_url: string | null;
+  status: "draft" | "published";
+  author_id: string;
+  updated_at: string;
 };
 
 const url = import.meta.env.VITE_SUPABASE_URL?.trim();

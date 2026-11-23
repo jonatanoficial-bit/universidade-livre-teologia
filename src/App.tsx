@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   createInitialCatalog,
   type Catalog,
@@ -10,6 +10,8 @@ import {
   isSupabaseConfigured,
   supabase,
   type AppRole,
+  type EditorialLesson,
+  type EditorialModule,
   type RemoteProfile,
   type TeacherAttempt,
 } from "./lib/supabase";
@@ -34,6 +36,10 @@ type Certificate = {
   name: string;
   issuedAt: string;
   token: string;
+};
+type RemoteCatalog = {
+  modules: EditorialModule[];
+  lessons: EditorialLesson[];
 };
 const store = {
   get<T>(key: string, fallback: T): T {
@@ -71,6 +77,74 @@ const blocksFromText = (value: string): ContentBlock[] =>
               ? { type: "list", items: [line.slice(2)] }
               : { type: "paragraph", text: line },
     );
+const normalizeBlocks = (value: unknown): ContentBlock[] =>
+  Array.isArray(value)
+    ? value.flatMap((block) => {
+        if (!block || typeof block !== "object") return [];
+        const item = block as { type?: unknown; text?: unknown; items?: unknown };
+        const text = typeof item.text === "string" ? item.text.slice(0, 12000) : "";
+        if (
+          item.type === "heading" ||
+          item.type === "subheading" ||
+          item.type === "callout" ||
+          item.type === "paragraph"
+        )
+          return text ? [{ type: item.type, text } as ContentBlock] : [];
+        if (item.type === "list" && Array.isArray(item.items)) {
+          const items = item.items
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.slice(0, 1200))
+            .slice(0, 80);
+          return items.length ? [{ type: "list", items }] : [];
+        }
+        return [];
+      })
+    : [];
+const textList = (value: unknown, max = 40) =>
+  Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.slice(0, 1600))
+        .slice(0, max)
+    : [];
+const appendMissing = <T extends { id: string }>(primary: T[], extra: T[]) => [
+  ...primary,
+  ...extra.filter((item) => !primary.some((current) => current.id === item.id)),
+];
+const moduleFromRemote = (module: EditorialModule) => ({
+  id: module.id,
+  courseId: module.course_id,
+  title: module.title,
+  order: module.position,
+  summary: module.summary,
+});
+const lessonFromRemote = (lesson: EditorialLesson): Lesson => {
+  const parsedVideo = lesson.youtube_url ? parseYouTubeVideo(lesson.youtube_url) : null;
+  return {
+    id: lesson.id,
+    courseId: lesson.course_id,
+    moduleId: lesson.module_id,
+    slug: lesson.slug,
+    title: lesson.title,
+    intro: lesson.intro,
+    objectives: textList(lesson.objectives, 12),
+    body: normalizeBlocks(lesson.content_blocks),
+    references: textList(lesson.source_references),
+    minutes: lesson.estimated_minutes,
+    order: lesson.position,
+    visibility: lesson.status,
+    updatedAt: lesson.updated_at.slice(0, 10),
+    video: parsedVideo
+      ? {
+          id: parsedVideo.id,
+          url: parsedVideo.canonicalUrl,
+          title: "Vídeo complementar",
+          channel: "Canal informado pelo docente",
+          status: "approved",
+        }
+      : undefined,
+  };
+};
 const statusLabel = (status: Course["status"]) =>
   status === "published"
     ? "Publicado"
@@ -123,9 +197,20 @@ function Status({ status }: { status: Course["status"] }) {
 
 function App() {
   const [route, setRoute] = useState(path);
-  const [catalog, setCatalog] = useState<Catalog>(() =>
-    store.get("ult-catalog", createInitialCatalog()),
-  );
+  const [catalog, setCatalog] = useState<Catalog>(() => {
+    const initial = createInitialCatalog();
+    const saved = store.get("ult-catalog", initial);
+    return {
+      courses: appendMissing(initial.courses, saved.courses),
+      modules: appendMissing(initial.modules, saved.modules),
+      lessons: appendMissing(initial.lessons, saved.lessons),
+      questions: appendMissing(initial.questions, saved.questions),
+    };
+  });
+  const [remoteCatalog, setRemoteCatalog] = useState<RemoteCatalog>({
+    modules: [],
+    lessons: [],
+  });
   const [account, setAccount] = useState<Account | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus>(
     isSupabaseConfigured ? "checking" : "unconfigured",
@@ -148,6 +233,55 @@ function App() {
   const [fontScale, setFontScale] = useState(() =>
     store.get("ult-font-scale", 1),
   );
+  const refreshEditorialContent = async () => {
+    const client = supabase;
+    if (!client) return;
+    const [modulesResponse, lessonsResponse] = await Promise.all([
+      client
+        .from("editorial_modules")
+        .select("id, course_id, title, summary, position, created_by, updated_at")
+        .order("position", { ascending: true }),
+      client
+        .from("editorial_lessons")
+        .select(
+          "id, course_id, module_id, position, slug, title, intro, objectives, content_blocks, source_references, estimated_minutes, youtube_url, status, author_id, updated_at",
+        )
+        .order("position", { ascending: true }),
+    ]);
+    if (modulesResponse.error || lessonsResponse.error) {
+      setSyncMessage("O catálogo compartilhado não pôde ser atualizado agora.");
+      return;
+    }
+    setRemoteCatalog({
+      modules: (modulesResponse.data ?? []) as EditorialModule[],
+      lessons: (lessonsResponse.data ?? []) as EditorialLesson[],
+    });
+  };
+  const visibleCatalog = useMemo(() => {
+    const modules = appendMissing(
+      catalog.modules,
+      remoteCatalog.modules.map(moduleFromRemote),
+    );
+    const lessons = appendMissing(
+      catalog.lessons,
+      remoteCatalog.lessons.map(lessonFromRemote),
+    );
+    const remotelyPublished = new Set(
+      remoteCatalog.lessons
+        .filter((lesson) => lesson.status === "published")
+        .map((lesson) => lesson.course_id),
+    );
+    return {
+      ...catalog,
+      courses: catalog.courses.map((course) =>
+        remotelyPublished.has(course.id)
+          ? { ...course, status: "published" as const }
+          : course,
+      ),
+      modules,
+      lessons,
+    };
+  }, [catalog, remoteCatalog]);
   useEffect(() => {
     const update = () => setRoute(path());
     window.addEventListener("hashchange", update);
@@ -163,6 +297,12 @@ function App() {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
   useEffect(() => store.set("ult-font-scale", fontScale), [fontScale]);
+  useEffect(() => {
+    const refreshTimer = window.setTimeout(() => {
+      void refreshEditorialContent();
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
+  }, [account?.id]);
 
   useEffect(() => {
     const client = supabase;
@@ -298,9 +438,9 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const courseById = (id: string) =>
-    catalog.courses.find((course) => course.id === id);
+    visibleCatalog.courses.find((course) => course.id === id);
   const lessonsFor = (courseId: string) =>
-    catalog.lessons
+    visibleCatalog.lessons
       .filter(
         (lesson) =>
           lesson.courseId === courseId && lesson.visibility === "published",
@@ -311,7 +451,7 @@ function App() {
       ...value,
       [id]: { completed: true, savedAt: new Date().toISOString() },
     }));
-    const lesson = catalog.lessons.find((candidate) => candidate.id === id);
+    const lesson = visibleCatalog.lessons.find((candidate) => candidate.id === id);
     if (supabase && account && lesson) {
       void supabase
         .from("learning_progress")
@@ -452,7 +592,7 @@ function App() {
     navigate("/");
   };
   const shared = {
-    catalog,
+    catalog: visibleCatalog,
     setCatalog,
     account,
     progress,
@@ -498,9 +638,18 @@ function App() {
       <TeacherReviews
         account={account}
         attempts={teacherAttempts}
-        catalog={catalog}
+        catalog={visibleCatalog}
         navigate={navigate}
         publishFeedback={publishFeedback}
+      />
+    );
+  else if (route === "/conteudos")
+    page = (
+      <TeacherStudio
+        account={account}
+        catalog={visibleCatalog}
+        navigate={navigate}
+        refreshEditorialContent={refreshEditorialContent}
       />
     );
   else if (route === "/admin") page = <Admin {...shared} />;
@@ -607,6 +756,16 @@ function Header({
             >
               {account.name.split(" ")[0]}
             </button>
+            {(account.role === "teacher" ||
+              account.role === "editor" ||
+              account.role === "admin") && (
+              <button
+                className="quiet"
+                onClick={() => navigate("/conteudos")}
+              >
+                Conteúdos
+              </button>
+            )}
             {(account.role === "editor" || account.role === "admin") && (
               <button className="quiet" onClick={() => navigate("/admin")}>
                 Painel
@@ -1504,6 +1663,307 @@ function Campus({
     </section>
   );
 }
+function TeacherStudio({
+  account,
+  catalog,
+  navigate,
+  refreshEditorialContent,
+}: {
+  account: Account | null;
+  catalog: Catalog;
+  navigate: (to: string) => void;
+  refreshEditorialContent: () => Promise<void>;
+}) {
+  const [allowedCourseIds, setAllowedCourseIds] = useState<string[] | null>(
+    null,
+  );
+  const [courseId, setCourseId] = useState("d01");
+  const [moduleId, setModuleId] = useState("");
+  const [newModuleTitle, setNewModuleTitle] = useState("");
+  const [lessonTitle, setLessonTitle] = useState("");
+  const [intro, setIntro] = useState("");
+  const [objectives, setObjectives] = useState("");
+  const [body, setBody] = useState(
+    "# Pergunta norteadora\nEscreva o conteúdo em parágrafos curtos, claros e autorais.\n\n## Desenvolvimento\nExplique o conceito, indique o contexto e apresente as fontes usadas.\n\n! Revise fatos, citações e referências antes de publicar.",
+  );
+  const [references, setReferences] = useState("");
+  const [youtube, setYoutube] = useState("");
+  const [minutes, setMinutes] = useState(12);
+  const [publishNow, setPublishNow] = useState(true);
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const isContentAuthor = Boolean(
+    account &&
+      (account.role === "teacher" ||
+        account.role === "editor" ||
+        account.role === "admin"),
+  );
+  const accountId = account?.id;
+  const accountRole = account?.role;
+  const hasAllCourseAccess =
+    accountRole === "editor" || accountRole === "admin";
+
+  useEffect(() => {
+    const client = supabase;
+    if (!client || !accountId || !isContentAuthor || hasAllCourseAccess) return;
+    void client
+      .from("teacher_course_assignments")
+      .select("course_id")
+      .eq("teacher_id", accountId)
+      .then(({ data, error }) => {
+        if (error) {
+          setMessage("Não foi possível carregar os cursos atribuídos ao seu perfil.");
+          return;
+        }
+        setAllowedCourseIds((data ?? []).map((row) => row.course_id as string));
+      });
+  }, [accountId, hasAllCourseAccess, isContentAuthor]);
+
+  const availableCourses = hasAllCourseAccess
+    ? catalog.courses
+    : catalog.courses.filter((course) => allowedCourseIds?.includes(course.id));
+  const activeCourseId = availableCourses.some((course) => course.id === courseId)
+    ? courseId
+    : (availableCourses[0]?.id ?? "");
+  const modules = catalog.modules
+    .filter((module) => module.courseId === activeCourseId)
+    .sort((a, b) => a.order - b.order);
+  const activeModuleId =
+    moduleId === "__new" || modules.some((module) => module.id === moduleId)
+      ? moduleId
+      : (modules[0]?.id ?? "__new");
+  const publishedInCourse = catalog.lessons.filter(
+    (lesson) =>
+      lesson.courseId === activeCourseId && lesson.visibility === "published",
+  );
+
+  if (!account || !isContentAuthor)
+    return (
+      <section className="page narrow">
+        <div className="eyebrow">ÁREA DOCENTE</div>
+        <h1>Publicação de conteúdos.</h1>
+        <p>
+          Entre com uma conta de professor, editor ou administrador autorizada.
+        </p>
+        <button className="primary" onClick={() => navigate("/entrar")}>
+          Entrar em uma conta autorizada
+        </button>
+      </section>
+    );
+
+  const saveLesson = async (event: FormEvent) => {
+    event.preventDefault();
+    const client = supabase;
+    const cleanTitle = lessonTitle.trim();
+    const contentBlocks = blocksFromText(body).filter(
+      (block) => block.text || block.items?.length,
+    );
+    if (!client || !cleanTitle || !activeCourseId || !contentBlocks.length) {
+      setMessage("Informe o curso, o título e o texto da aula antes de salvar.");
+      return;
+    }
+    const parsedVideo = youtube.trim() ? parseYouTubeVideo(youtube.trim()) : null;
+    if (youtube.trim() && !parsedVideo) {
+      setMessage("Use uma URL HTTPS do YouTube ou um ID de vídeo válido.");
+      return;
+    }
+    if (activeModuleId === "__new" && newModuleTitle.trim().length < 2) {
+      setMessage("Dê um título ao novo módulo antes de publicar a aula.");
+      return;
+    }
+
+    setSaving(true);
+    setMessage("");
+    let targetModuleId = activeModuleId;
+    if (activeModuleId === "__new") {
+      targetModuleId = `${activeCourseId}-m-${crypto.randomUUID()}`;
+      const { error: moduleError } = await client.from("editorial_modules").insert({
+        id: targetModuleId,
+        course_id: activeCourseId,
+        title: newModuleTitle.trim(),
+        summary: `Módulo criado por ${account.name}.`,
+        position: modules.length + 1,
+      });
+      if (moduleError) {
+        setSaving(false);
+        setMessage("Não foi possível criar o módulo. Tente novamente.");
+        return;
+      }
+    }
+
+    const { error } = await client.from("editorial_lessons").insert({
+      course_id: activeCourseId,
+      module_id: targetModuleId,
+      position: publishedInCourse.length + 1,
+      slug: `${slugify(cleanTitle) || "aula"}-${Date.now().toString(36)}`,
+      title: cleanTitle,
+      intro: intro.trim(),
+      objectives: objectives
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 12),
+      content_blocks: contentBlocks,
+      source_references: references
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 40),
+      estimated_minutes: Math.max(1, Math.min(600, Number(minutes) || 12)),
+      youtube_url: parsedVideo?.canonicalUrl ?? null,
+      status: publishNow ? "published" : "draft",
+      published_at: publishNow ? new Date().toISOString() : null,
+    });
+    setSaving(false);
+    if (error) {
+      setMessage("Não foi possível salvar esta aula. Confira o curso e tente novamente.");
+      return;
+    }
+    await refreshEditorialContent();
+    setLessonTitle("");
+    setIntro("");
+    setObjectives("");
+    setReferences("");
+    setYoutube("");
+    setNewModuleTitle("");
+    setBody(
+      "# Pergunta norteadora\nEscreva o conteúdo em parágrafos curtos, claros e autorais.\n\n## Desenvolvimento\nExplique o conceito, indique o contexto e apresente as fontes usadas.",
+    );
+    setMessage(
+      publishNow
+        ? "Aula publicada. Ela já aparece no curso para alunos e visitantes."
+        : "Rascunho salvo na sua área docente.",
+    );
+  };
+
+  return (
+    <section className="teacher-studio page">
+      <div className="studio-hero">
+        <div>
+          <div className="eyebrow">ÁREA DOCENTE · PUBLICAÇÃO COMPARTILHADA</div>
+          <h1>Publique aulas que entram no curso.</h1>
+          <p>
+            O conteúdo é salvo no campus, vinculado ao curso escolhido e, ao
+            publicar, fica disponível para todos os alunos.
+          </p>
+        </div>
+        <div className="studio-rule">
+          <strong>Texto seguro</strong>
+          <span>O editor aceita blocos de leitura, não HTML livre.</span>
+        </div>
+      </div>
+      {message && <div className="admin-message" role="status">{message}</div>}
+      {!availableCourses.length ? (
+        <section className="panel">
+          <h2>Nenhum curso atribuído</h2>
+          <p>Peça a um administrador para atribuir um curso ao seu perfil docente.</p>
+        </section>
+      ) : (
+        <div className="studio-layout">
+          <form className="panel studio-form" onSubmit={saveLesson}>
+            <div className="panel-heading">
+              <div>
+                <h2>Nova aula</h2>
+                <p>Preencha o essencial e publique quando a revisão estiver concluída.</p>
+              </div>
+              <span className="status published">Banco conectado</span>
+            </div>
+            <div className="form-columns">
+              <label>
+                Curso
+                <select value={activeCourseId} onChange={(event) => { setCourseId(event.target.value); setModuleId(""); }}>
+                  {availableCourses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {course.code} · {course.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Módulo
+                <select value={activeModuleId} onChange={(event) => setModuleId(event.target.value)}>
+                  {modules.map((module) => (
+                    <option key={module.id} value={module.id}>{module.title}</option>
+                  ))}
+                  <option value="__new">+ Criar novo módulo</option>
+                </select>
+              </label>
+            </div>
+            {activeModuleId === "__new" && (
+              <label>
+                Título do novo módulo
+                <input value={newModuleTitle} onChange={(event) => setNewModuleTitle(event.target.value)} placeholder="Ex.: Contexto histórico" />
+              </label>
+            )}
+            <div className="form-columns">
+              <label>
+                Título da aula
+                <input value={lessonTitle} onChange={(event) => setLessonTitle(event.target.value)} placeholder="Ex.: O que este texto procura comunicar?" required />
+              </label>
+              <label>
+                Leitura estimada (minutos)
+                <input type="number" min="1" max="600" value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} />
+              </label>
+            </div>
+            <label>
+              Introdução
+              <textarea value={intro} onChange={(event) => setIntro(event.target.value)} placeholder="Apresente a pergunta que orienta a leitura." />
+            </label>
+            <label>
+              Objetivos de aprendizagem (um por linha)
+              <textarea value={objectives} onChange={(event) => setObjectives(event.target.value)} placeholder="Identificar...&#10;Comparar...&#10;Explicar..." />
+            </label>
+            <div className="editor-toolbar" aria-label="Atalhos de formatação">
+              <button type="button" onClick={() => setBody(`${body}\n# Nova seção`)}>+ Seção</button>
+              <button type="button" onClick={() => setBody(`${body}\n## Subseção`)}>+ Subseção</button>
+              <button type="button" onClick={() => setBody(`${body}\n- Item de lista`)}>+ Lista</button>
+              <button type="button" onClick={() => setBody(`${body}\n! Chamada de atenção`)}>+ Aviso</button>
+            </div>
+            <label>
+              Texto da aula
+              <textarea className="rich-input" value={body} onChange={(event) => setBody(event.target.value)} required />
+            </label>
+            <label>
+              Referências e bibliografia (uma por linha)
+              <textarea value={references} onChange={(event) => setReferences(event.target.value)} placeholder="Autor, obra, edição, página ou link" />
+            </label>
+            <label>
+              Vídeo complementar do YouTube (opcional)
+              <input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtu.be/..." />
+            </label>
+            <label className="switch-row publish-switch">
+              <input type="checkbox" checked={publishNow} onChange={(event) => setPublishNow(event.target.checked)} />
+              Publicar para todos os alunos assim que salvar
+            </label>
+            <button className="primary" disabled={saving}>
+              {saving ? "Salvando…" : publishNow ? "Publicar aula" : "Salvar rascunho"}
+            </button>
+          </form>
+          <aside className="studio-aside">
+            <section className="panel">
+              <div className="eyebrow">NO CURSO</div>
+              <h2>{catalog.courses.find((course) => course.id === activeCourseId)?.title}</h2>
+              <p>{publishedInCourse.length} aula(s) publicada(s) neste curso.</p>
+              <button className="outline" onClick={() => navigate(`/curso/${activeCourseId}`)}>
+                Abrir página pública
+              </button>
+            </section>
+            <section className="panel studio-checklist">
+              <h2>Antes de publicar</h2>
+              <ul>
+                <li>Confirme título, contexto e objetivos.</li>
+                <li>Indique referências verificáveis.</li>
+                <li>Use apenas vídeos autorizados para incorporação.</li>
+                <li>Diferencie texto bíblico, comentário e interpretação.</li>
+              </ul>
+            </section>
+          </aside>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function TeacherReviews({
   account,
   attempts,
