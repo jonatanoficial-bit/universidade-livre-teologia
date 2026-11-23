@@ -10,11 +10,11 @@ MVP de uma plataforma gratuita de cursos livres em teologia. O projeto trata a l
 - Catálogo estruturado de 6 períodos, 24 disciplinas e 96 módulos. As 93 unidades sem texto aparecem como **Em desenvolvimento**, nunca como aulas disponíveis.
 - Três aulas-piloto autorais no curso D01: texto orientado, objetivos, leitura por seções, referências e notas editoriais de revisão pendente.
 - Minicurso fechado para testar conclusão, avaliação formativa e certificado de **demonstração**.
-- Leitor com índice, navegação entre aulas, tamanho de fonte, tema, progresso local e anotações privadas no navegador.
+- Leitor com índice, navegação entre aulas, tamanho de fonte, tema, progresso e anotações sincronizáveis por conta.
 - Vídeo do YouTube opcional e seguro: aceita apenas ID ou URL HTTPS de domínios YouTube, cria player após clique e mantém link alternativo para a origem.
 - Painel editorial demonstrativo: novo curso, módulo, aula por blocos estruturados, rascunho, prévia, publicação/despublicação, importação e exportação JSON.
 - PWA simples com cache local do shell do app, manifesto e ícone próprio.
-- Regras Firestore e índices para a futura camada online, além de um workflow de deploy para GitHub Pages.
+- Migração Supabase com Auth, RLS, progresso, anotações, tentativas e fila de avaliação docente, além do workflow de deploy para GitHub Pages.
 
 ## Executar localmente
 
@@ -43,33 +43,32 @@ pnpm run build
 
 ### Estudante
 
-1. Use `#/entrar` e escolha **Entrar como estudante**.
+1. Use `#/entrar`, crie uma conta gratuita com e-mail e confirme o endereço.
 2. Conclua as três aulas do minicurso `#/curso/mini-metodo`.
 3. Responda à avaliação com 70% ou mais.
-4. A tela de emissão passa a liberar um certificado com marca d'água `DEMONSTRAÇÃO - SEM VALIDADE`; ele pode ser impresso como PDF local.
+4. Progresso, notas, tentativas e eventuais devolutivas aparecem em **Meu campus**.
 
-### Editora
+### Professora ou professor
 
-1. Em `#/entrar`, escolha **Entrar como editora**.
-2. Abra **Painel** e crie um curso, módulo e aula sem editar código.
-3. Cole uma URL de YouTube válida e marque a aprovação somente depois da revisão humana.
-4. Salve como rascunho, abra a prévia e publique/despublique. A persistência é em `localStorage`, portanto sobrevive ao recarregamento no mesmo navegador.
+1. Um administrador atribui o papel `teacher` e os cursos sob sua responsabilidade.
+2. Entre normalmente e abra **Avaliações**.
+3. Leia cada tentativa autorizada e publique uma devolutiva acadêmica para o estudante.
 
-## Limites explícitos do modo demonstração
+## Autenticação e persistência
 
-O produto no navegador está funcional para navegação, produção local de conteúdo e validação do desenho de experiência. Ele **não** usa login real, banco remoto, sincronização entre dispositivos, nem emissão institucional de certificados.
+O app usa Supabase Auth (e-mail/senha) e PostgreSQL quando as variáveis públicas do cliente e a migração estão configuradas. A tela de acesso informa claramente quando a conexão ainda não foi ativada; não existe mais atalho de "conta demonstrativa".
 
-Isso é uma decisão de segurança: o browser não pode ser autoridade para papéis, notas ou certificados. Não há segredo, chave de serviço, emissor real ou CNPJ inserido neste repositório. A verificação de certificados do modo demo é deliberadamente apenas local e sinalizada na interface.
+O banco aplica Row Level Security: estudantes só veem e alteram registros próprios; docentes só leem e avaliam tentativas dos cursos que lhes foram atribuídos; papéis são definidos no banco, nunca no `user_metadata` ou no navegador. A emissão de certificados continua deliberadamente local e marcada como demonstração.
 
-## Caminho para produção
+## Ativação em produção
 
-1. Crie um projeto Firebase no plano compatível com a operação e habilite os provedores de login aprovados.
-2. Copie `.env.example` para `.env.local` e preencha as chaves públicas de cliente. Nunca publique credenciais administrativas.
-3. Revise, teste com o Emulator e implante `firebase/firestore.rules` e `firebase/firestore.indexes.json`.
-4. Crie um endpoint confiável (por exemplo, Cloudflare Worker ou função de servidor) que valide o token do usuário, leia progresso e tentativas persistidos, confira a versão publicada do curso e faça emissão idempotente com token aleatório. Esse endpoint deve manter os segredos no provedor, não no app.
-5. Substitua o adaptador de armazenamento local por Firestore para perfil, notas, tentativas e progresso; na entrada, ofereça a mesclagem consciente do progresso local com o perfil.
-6. Configure entidade emissora, texto jurídico, política de privacidade, idade atendida e processo de revogação antes de habilitar certificado público verificável.
-7. Para GitHub Pages, em **Settings → Pages**, escolha **GitHub Actions**. O workflow em `.github/workflows/deploy-pages.yml` constrói e publica o diretório `dist` a cada push em `main`.
+1. No Supabase, ative ou crie um projeto e aplique `supabase/migrations/20261123120905_learning_identity_and_assessments.sql` com `supabase db push` depois de vinculá-lo pela CLI.
+2. Em **Auth → URL configuration**, configure o Site URL e adicione `https://jonatanoficial-bit.github.io/universidade-livre-teologia/` às Redirect URLs.
+3. Copie `.env.example` para `.env.local` e preencha somente `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`. Nunca use no frontend uma chave `service_role` ou secreta.
+4. Em GitHub → **Settings → Secrets and variables → Actions → Variables**, crie `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`. O workflow já usa essas variáveis na compilação do Pages.
+5. Depois da primeira conta criada, atribua funções administrativamente pelo SQL Editor: `update public.profiles set role = 'teacher' where id = '<uuid-do-usuario>';`. Para liberar uma disciplina: `insert into public.teacher_course_assignments (teacher_id, course_id) values ('<uuid-do-professor>', 'mini-metodo');`.
+6. Execute os advisors de segurança do Supabase após aplicar a migração e antes de abrir inscrições públicas.
+7. Configure entidade emissora, texto jurídico, política de privacidade, idade atendida e processo de revogação antes de habilitar certificado público verificável.
 
 ## Modelo de conteúdo e importação
 
@@ -79,8 +78,8 @@ O painel exporta o formato completo em JSON. Para importar, o arquivo precisa co
 
 - Validação de URL impede `javascript:`, iframes colados e hosts que não sejam YouTube.
 - Links externos devem usar `rel="noopener noreferrer"`.
-- As regras Firestore recusam criação de papel pelo cliente e reservam emissão/revogação de certificados ao servidor.
-- Anotações, progresso e tentativas pertencem exclusivamente ao respectivo UID quando a camada online estiver configurada.
+- As políticas RLS do Supabase recusam elevação de papel no cliente e separam os dados de estudantes da fila docente.
+- Anotações, progresso e tentativas pertencem exclusivamente ao respectivo UID; professores acessam apenas as tentativas dos cursos atribuídos.
 - O cache PWA é apenas para assets estáticos e não promete vídeo offline nem substitui backup.
 
 ## Decisões de produto

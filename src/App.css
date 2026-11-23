@@ -937,6 +937,188 @@ textarea {
   color: var(--muted);
   line-height: 1.5;
 }
+.auth-form,
+.auth-connection-notice {
+  max-width: 570px;
+  margin-top: 2rem;
+  border: 1px solid rgba(190, 140, 47, 0.38);
+  border-radius: 20px;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 253, 248, 0.96),
+      rgba(247, 238, 216, 0.86)
+    ),
+    var(--card);
+  padding: 1.6rem;
+  box-shadow: 0 18px 42px rgba(16, 35, 63, 0.1);
+}
+.auth-form {
+  display: grid;
+  gap: 1rem;
+}
+.auth-form label,
+.review-card label {
+  display: grid;
+  gap: 0.45rem;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+.auth-form input {
+  width: 100%;
+  border: 1px solid rgba(16, 35, 63, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--ink);
+  padding: 0.78rem 0.9rem;
+}
+.auth-form input:focus,
+.review-card textarea:focus {
+  outline: 3px solid rgba(197, 150, 67, 0.22);
+  border-color: var(--gold);
+}
+.auth-mode {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid rgba(16, 35, 63, 0.12);
+  border-radius: 999px;
+  background: rgba(16, 35, 63, 0.06);
+  padding: 0.22rem;
+}
+.auth-mode button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.55rem 0.9rem;
+}
+.auth-mode button.active {
+  background: var(--ink);
+  color: #fff;
+  box-shadow: 0 5px 12px rgba(16, 35, 63, 0.18);
+}
+.auth-connection-notice strong {
+  display: block;
+  color: var(--accent);
+  font:
+    1.35rem Georgia,
+    serif;
+}
+.auth-connection-notice p,
+.form-message,
+.sync-message {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.form-message,
+.sync-message {
+  border-left: 3px solid var(--gold);
+  background: rgba(232, 197, 111, 0.12);
+  padding: 0.7rem 0.85rem;
+}
+.feedback-preview {
+  display: inline-block;
+  margin-top: 0.5rem;
+  color: var(--accent);
+  font-style: italic;
+}
+.teacher-page {
+  max-width: 1180px;
+}
+.review-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 220px));
+  gap: 1rem;
+  margin: 2rem 0 1.2rem;
+}
+.review-summary > div {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid rgba(190, 140, 47, 0.34);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #112a4b, #071629);
+  color: #fff;
+  padding: 1.1rem 1.25rem;
+  box-shadow: 0 14px 30px rgba(10, 24, 46, 0.16);
+}
+.review-summary span,
+.review-summary small {
+  color: #d8e1ec;
+}
+.review-summary strong {
+  color: #f0ce7f;
+  font:
+    2.25rem Georgia,
+    serif;
+}
+.review-list {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 1.25rem;
+}
+.review-card {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--card);
+  padding: clamp(1.2rem, 3vw, 1.8rem);
+  box-shadow: var(--shadow);
+}
+.review-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+}
+.review-card h2 {
+  margin: 0.25rem 0;
+  font-size: 1.5rem;
+}
+.review-card h2 + p,
+.review-meta {
+  color: var(--muted);
+}
+.review-meta {
+  font-size: 0.88rem;
+}
+.result-pass,
+.result-retry {
+  display: grid;
+  min-width: 92px;
+  border-radius: 14px;
+  padding: 0.65rem 0.75rem;
+  text-align: center;
+}
+.result-pass {
+  background: #e2f3ed;
+  color: #126053;
+}
+.result-retry {
+  background: #fff0e5;
+  color: #9a4d17;
+}
+.result-pass strong,
+.result-retry strong {
+  font:
+    1.5rem Georgia,
+    serif;
+}
+.review-card textarea {
+  min-height: 118px;
+  resize: vertical;
+  border: 1px solid rgba(16, 35, 63, 0.2);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 0.8rem;
+}
+.review-card .primary {
+  margin-top: 1rem;
+}
+.empty-review {
+  max-width: 620px;
+  margin-top: 1.25rem;
+}
 .campus-grid,
 .admin-grid {
   display: grid;
@@ -1477,7 +1659,12 @@ footer small {
 .hero-shade {
   z-index: -1;
   background:
-    linear-gradient(90deg, rgba(4, 13, 29, 0.95) 0%, rgba(5, 16, 35, 0.83) 43%, rgba(6, 17, 36, 0.26) 100%),
+    linear-gradient(
+      90deg,
+      rgba(4, 13, 29, 0.95) 0%,
+      rgba(5, 16, 35, 0.83) 43%,
+      rgba(6, 17, 36, 0.26) 100%
+    ),
     linear-gradient(0deg, rgba(4, 13, 29, 0.52), transparent 54%);
 }
 
@@ -1485,7 +1672,8 @@ footer small {
   position: relative;
   z-index: 1;
   max-width: 800px;
-  padding: clamp(4.75rem, 10vw, 8.25rem) clamp(1.5rem, 7vw, 6.25rem) clamp(3.25rem, 6vw, 4.75rem);
+  padding: clamp(4.75rem, 10vw, 8.25rem) clamp(1.5rem, 7vw, 6.25rem)
+    clamp(3.25rem, 6vw, 4.75rem);
 }
 
 .hero .eyebrow,
@@ -1643,7 +1831,12 @@ footer small {
 
   .hero-shade {
     background:
-      linear-gradient(0deg, rgba(4, 13, 29, 0.96) 0%, rgba(4, 13, 29, 0.72) 56%, rgba(4, 13, 29, 0.35) 100%),
+      linear-gradient(
+        0deg,
+        rgba(4, 13, 29, 0.96) 0%,
+        rgba(4, 13, 29, 0.72) 56%,
+        rgba(4, 13, 29, 0.35) 100%
+      ),
       linear-gradient(90deg, rgba(4, 13, 29, 0.7), rgba(4, 13, 29, 0.08));
   }
 
@@ -1675,5 +1868,26 @@ footer small {
 
   .principles-copy img {
     height: 210px;
+  }
+}
+
+@media (max-width: 800px) {
+  .auth-page {
+    padding-top: 4rem;
+    padding-bottom: 4rem;
+  }
+
+  .review-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .review-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .result-pass,
+  .result-retry {
+    width: fit-content;
   }
 }

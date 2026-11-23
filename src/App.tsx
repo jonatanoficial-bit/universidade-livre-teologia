@@ -6,12 +6,29 @@ import {
   type Course,
   type Lesson,
 } from "./data";
+import {
+  isSupabaseConfigured,
+  supabase,
+  type AppRole,
+  type RemoteProfile,
+  type TeacherAttempt,
+} from "./lib/supabase";
 import { parseYouTubeVideo } from "./lib/youtube";
 import "./App.css";
 
-type Account = { name: string; role: "student" | "editor" };
+type Account = { id: string; name: string; email: string; role: AppRole };
 type Progress = Record<string, { completed: boolean; savedAt: string }>;
-type QuizResult = Record<string, { score: number; passed: boolean }>;
+type QuizResult = Record<
+  string,
+  {
+    score: number;
+    passed: boolean;
+    attemptId?: string;
+    feedback?: string | null;
+    reviewedAt?: string | null;
+  }
+>;
+type AuthStatus = "checking" | "ready" | "unconfigured";
 type Certificate = {
   courseId: string;
   name: string;
@@ -109,9 +126,12 @@ function App() {
   const [catalog, setCatalog] = useState<Catalog>(() =>
     store.get("ult-catalog", createInitialCatalog()),
   );
-  const [account, setAccount] = useState<Account | null>(() =>
-    store.get<Account | null>("ult-account", null),
+  const [account, setAccount] = useState<Account | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(
+    isSupabaseConfigured ? "checking" : "unconfigured",
   );
+  const [syncMessage, setSyncMessage] = useState("");
+  const [teacherAttempts, setTeacherAttempts] = useState<TeacherAttempt[]>([]);
   const [progress, setProgress] = useState<Progress>(() =>
     store.get("ult-progress", {}),
   );
@@ -134,7 +154,6 @@ function App() {
     return () => window.removeEventListener("hashchange", update);
   }, []);
   useEffect(() => store.set("ult-catalog", catalog), [catalog]);
-  useEffect(() => store.set("ult-account", account), [account]);
   useEffect(() => store.set("ult-progress", progress), [progress]);
   useEffect(() => store.set("ult-results", results), [results]);
   useEffect(() => store.set("ult-notes", notes), [notes]);
@@ -144,6 +163,133 @@ function App() {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
   useEffect(() => store.set("ult-font-scale", fontScale), [fontScale]);
+
+  useEffect(() => {
+    const client = supabase;
+    if (!client) return;
+
+    let mounted = true;
+    const restoreUser = async (
+      user: {
+        id: string;
+        email?: string | null;
+      } | null,
+    ) => {
+      if (!user) {
+        if (mounted) {
+          setAccount(null);
+          setTeacherAttempts([]);
+          setAuthStatus("ready");
+        }
+        return;
+      }
+
+      const profileResponse = await client
+        .from("profiles")
+        .select("full_name, role")
+        .eq("id", user.id)
+        .single();
+      if (profileResponse.error || !profileResponse.data) {
+        if (mounted) {
+          setSyncMessage(
+            "Não foi possível carregar seu perfil. Confirme se a migração do banco foi aplicada.",
+          );
+          setAuthStatus("ready");
+        }
+        return;
+      }
+
+      const profile = profileResponse.data as RemoteProfile;
+      const nextAccount: Account = {
+        id: user.id,
+        name: profile.full_name,
+        email: user.email ?? "",
+        role: profile.role,
+      };
+      const [progressResponse, notesResponse, attemptsResponse] =
+        await Promise.all([
+          client
+            .from("learning_progress")
+            .select("lesson_id, completed, completed_at")
+            .eq("user_id", user.id),
+          client
+            .from("lesson_notes")
+            .select("lesson_id, body")
+            .eq("user_id", user.id),
+          client
+            .from("assessment_attempts")
+            .select(
+              "id, course_id, score, passed, teacher_feedback, reviewed_at, submitted_at",
+            )
+            .eq("student_id", user.id)
+            .order("submitted_at", { ascending: false }),
+        ]);
+
+      if (!mounted) return;
+      setAccount(nextAccount);
+      setAuthStatus("ready");
+      if (
+        progressResponse.error ||
+        notesResponse.error ||
+        attemptsResponse.error
+      ) {
+        setSyncMessage(
+          "Sua conta foi aberta, mas parte do histórico não pôde ser sincronizada agora.",
+        );
+      }
+      const remoteProgress: Progress = {};
+      for (const item of progressResponse.data ?? []) {
+        remoteProgress[item.lesson_id as string] = {
+          completed: Boolean(item.completed),
+          savedAt: item.completed_at as string,
+        };
+      }
+      setProgress(remoteProgress);
+      const remoteNotes: Record<string, string> = {};
+      for (const item of notesResponse.data ?? []) {
+        remoteNotes[item.lesson_id as string] = item.body as string;
+      }
+      setNotes(remoteNotes);
+      const remoteResults: QuizResult = {};
+      for (const item of attemptsResponse.data ?? []) {
+        const courseId = item.course_id as string;
+        if (!remoteResults[courseId]) {
+          remoteResults[courseId] = {
+            score: item.score as number,
+            passed: item.passed as boolean,
+            attemptId: item.id as string,
+            feedback: item.teacher_feedback as string | null,
+            reviewedAt: item.reviewed_at as string | null,
+          };
+        }
+      }
+      setResults(remoteResults);
+
+      if (profile.role === "teacher" || profile.role === "admin") {
+        const queueResponse = await client
+          .from("assessment_attempts")
+          .select(
+            "id, student_id, student_name, course_id, score, passed, submitted_at, teacher_feedback, reviewer_id, reviewed_at",
+          )
+          .order("submitted_at", { ascending: false });
+        if (mounted && !queueResponse.error) {
+          setTeacherAttempts(queueResponse.data as TeacherAttempt[]);
+        }
+      }
+    };
+
+    void client.auth.getUser().then(({ data }) => restoreUser(data.user));
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange((_event, session) => {
+      void restoreUser(session?.user ?? null);
+    });
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
   const navigate = (to: string) => {
     window.location.hash = to;
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -157,23 +303,149 @@ function App() {
           lesson.courseId === courseId && lesson.visibility === "published",
       )
       .sort((a, b) => a.order - b.order);
-  const markComplete = (id: string) =>
+  const markComplete = (id: string) => {
     setProgress((value) => ({
       ...value,
       [id]: { completed: true, savedAt: new Date().toISOString() },
     }));
-  const chooseAccount = (role: Account["role"]) => {
-    setAccount({
-      name:
-        role === "editor"
-          ? "Editora de demonstração"
-          : "Estudante de demonstração",
-      role,
-    });
-    navigate("/meu-campus");
+    const lesson = catalog.lessons.find((candidate) => candidate.id === id);
+    if (supabase && account && lesson) {
+      void supabase
+        .from("learning_progress")
+        .upsert(
+          {
+            user_id: account.id,
+            lesson_id: id,
+            course_id: lesson.courseId,
+            completed: true,
+            completed_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,lesson_id" },
+        )
+        .then(({ error }) => {
+          if (error)
+            setSyncMessage(
+              "A aula foi marcada neste dispositivo, mas não foi possível sincronizá-la.",
+            );
+        });
+    }
   };
-  const logout = () => {
+  const updateNote = (lessonId: string, body: string) =>
+    setNotes((value) => ({ ...value, [lessonId]: body }));
+  const saveNote = (lessonId: string, body: string) => {
+    updateNote(lessonId, body);
+    if (!supabase || !account) return;
+    void supabase
+      .from("lesson_notes")
+      .upsert(
+        { user_id: account.id, lesson_id: lessonId, body },
+        { onConflict: "user_id,lesson_id" },
+      )
+      .then(({ error }) => {
+        if (error)
+          setSyncMessage(
+            "A anotação foi mantida neste dispositivo, mas não foi sincronizada.",
+          );
+      });
+  };
+  const recordAssessment = (
+    courseId: string,
+    score: number,
+    answers: Record<string, number>,
+  ) => {
+    const result = { score, passed: score >= 70 };
+    setResults((value) => ({ ...value, [courseId]: result }));
+    if (!supabase || !account) return;
+    void supabase
+      .from("assessment_attempts")
+      .insert({
+        student_id: account.id,
+        student_name: account.name,
+        course_id: courseId,
+        score,
+        passed: result.passed,
+        answers,
+      })
+      .select("id, teacher_feedback, reviewed_at")
+      .single()
+      .then(({ data, error }) => {
+        if (error || !data) {
+          setSyncMessage(
+            "O resultado foi mostrado neste dispositivo, mas não foi enviado para avaliação.",
+          );
+          return;
+        }
+        setResults((value) => ({
+          ...value,
+          [courseId]: {
+            ...result,
+            attemptId: data.id as string,
+            feedback: data.teacher_feedback as string | null,
+            reviewedAt: data.reviewed_at as string | null,
+          },
+        }));
+      });
+  };
+  const submitLogin = async (email: string, password: string) => {
+    if (!supabase)
+      return "A conexão de autenticação ainda não foi configurada.";
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) return error.message;
+    navigate("/meu-campus");
+    return null;
+  };
+  const submitRegistration = async (
+    name: string,
+    email: string,
+    password: string,
+  ) => {
+    if (!supabase)
+      return "A conexão de autenticação ainda não foi configurada.";
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: name },
+        emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
+      },
+    });
+    if (error) return error.message;
+    if (!data.session)
+      return "Conta criada. Confira seu e-mail para confirmar o acesso antes de entrar.";
+    navigate("/meu-campus");
+    return null;
+  };
+  const publishFeedback = async (attemptId: string, feedback: string) => {
+    if (!supabase || !account)
+      return "Sessão indisponível para publicar a avaliação.";
+    const { data, error } = await supabase
+      .from("assessment_attempts")
+      .update({
+        teacher_feedback: feedback,
+        reviewer_id: account.id,
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq("id", attemptId)
+      .select(
+        "id, student_id, student_name, course_id, score, passed, submitted_at, teacher_feedback, reviewer_id, reviewed_at",
+      )
+      .single();
+    if (error || !data)
+      return error?.message ?? "Não foi possível publicar a devolutiva.";
+    setTeacherAttempts((attempts) =>
+      attempts.map((attempt) =>
+        attempt.id === attemptId ? (data as TeacherAttempt) : attempt,
+      ),
+    );
+    return null;
+  };
+  const logout = async () => {
+    if (supabase) await supabase.auth.signOut();
     setAccount(null);
+    setTeacherAttempts([]);
     navigate("/");
   };
   const shared = {
@@ -184,8 +456,10 @@ function App() {
     results,
     notes,
     certificates,
-    setResults,
+    recordAssessment,
     setNotes,
+    updateNote,
+    saveNote,
     setCertificates,
     navigate,
     courseById,
@@ -195,7 +469,8 @@ function App() {
     setFontScale,
     dark,
     setDark,
-    chooseAccount,
+    authStatus,
+    syncMessage,
   };
   const parts = route.split("/").filter(Boolean);
   let page: React.ReactNode;
@@ -205,9 +480,26 @@ function App() {
     page = <CoursePage {...shared} courseId={parts[1]} />;
   else if (parts[0] === "estudar" && parts[1] && parts[2])
     page = <Reader {...shared} courseId={parts[1]} lessonSlug={parts[2]} />;
-  else if (route === "/entrar") page = <Login chooseAccount={chooseAccount} />;
+  else if (route === "/entrar")
+    page = (
+      <Login
+        authStatus={authStatus}
+        login={submitLogin}
+        register={submitRegistration}
+      />
+    );
   else if (route.startsWith("/meu-campus"))
     page = <Campus {...shared} logout={logout} />;
+  else if (route === "/avaliacoes")
+    page = (
+      <TeacherReviews
+        account={account}
+        attempts={teacherAttempts}
+        catalog={catalog}
+        navigate={navigate}
+        publishFeedback={publishFeedback}
+      />
+    );
   else if (route === "/admin") page = <Admin {...shared} />;
   else if (parts[0] === "certificado" && parts[1])
     page = <CertificatePage {...shared} courseId={parts[1]} />;
@@ -240,8 +532,14 @@ type Shared = {
   results: QuizResult;
   notes: Record<string, string>;
   certificates: Certificate[];
-  setResults: (value: QuizResult) => void;
+  recordAssessment: (
+    courseId: string,
+    score: number,
+    answers: Record<string, number>,
+  ) => void;
   setNotes: (value: Record<string, string>) => void;
+  updateNote: (lessonId: string, body: string) => void;
+  saveNote: (lessonId: string, body: string) => void;
   setCertificates: (value: Certificate[]) => void;
   navigate: (to: string) => void;
   courseById: (id: string) => Course | undefined;
@@ -251,7 +549,8 @@ type Shared = {
   setFontScale: (value: number) => void;
   dark: boolean;
   setDark: (value: boolean) => void;
-  chooseAccount: (role: Account["role"]) => void;
+  authStatus: AuthStatus;
+  syncMessage: string;
 };
 
 function Header({
@@ -275,10 +574,7 @@ function Header({
         aria-label="Free University of Theology, início"
       >
         <span className="brand-mark">
-          <img
-            src={`${import.meta.env.BASE_URL}images/fut-crest.png`}
-            alt=""
-          />
+          <img src={`${import.meta.env.BASE_URL}images/fut-crest.png`} alt="" />
         </span>
         <b>
           Free University
@@ -308,9 +604,14 @@ function Header({
             >
               {account.name.split(" ")[0]}
             </button>
-            {account.role === "editor" && (
+            {(account.role === "editor" || account.role === "admin") && (
               <button className="quiet" onClick={() => navigate("/admin")}>
                 Painel
+              </button>
+            )}
+            {(account.role === "teacher" || account.role === "admin") && (
+              <button className="quiet" onClick={() => navigate("/avaliacoes")}>
+                Avaliações
               </button>
             )}
             <button className="quiet" onClick={logout}>
@@ -373,8 +674,8 @@ function Home({ catalog, courseById, lessonsFor, navigate }: Shared) {
           </h1>
           <p>
             Uma biblioteca universitária contemporânea para explorar as
-            Escrituras, a história e as tradições cristãs com clareza, fontes
-            e respeito às divergências.
+            Escrituras, a história e as tradições cristãs com clareza, fontes e
+            respeito às divergências.
           </p>
           <div className="hero-actions">
             <button className="primary" onClick={() => navigate("/cursos")}>
@@ -576,7 +877,7 @@ function CoursePage({
   progress,
   results,
   account,
-  setResults,
+  recordAssessment,
   navigate,
   courseId,
 }: Shared & { courseId: string }) {
@@ -717,7 +1018,7 @@ function CoursePage({
           courseId={course.id}
           account={account}
           results={results}
-          setResults={setResults}
+          recordAssessment={recordAssessment}
         />
       )}
     </section>
@@ -732,6 +1033,7 @@ function Reader({
   navigate,
   markComplete,
   setNotes,
+  saveNote,
   fontScale,
   setFontScale,
   courseId,
@@ -854,7 +1156,7 @@ function Reader({
           {account ? (
             <>
               <label htmlFor="note">
-                Privadas e salvas neste dispositivo demonstrativo
+                Privadas e sincronizadas com sua conta ao sair do campo
               </label>
               <textarea
                 id="note"
@@ -862,6 +1164,7 @@ function Reader({
                 onChange={(event) =>
                   setNotes({ ...notes, [lesson.id]: event.target.value })
                 }
+                onBlur={(event) => saveNote(lesson.id, event.target.value)}
                 placeholder="Escreva uma observação, dúvida ou referência para retomar depois."
               />
             </>
@@ -902,34 +1205,121 @@ function Reader({
   );
 }
 function Login({
-  chooseAccount,
+  authStatus,
+  login,
+  register,
 }: {
-  chooseAccount: (role: Account["role"]) => void;
+  authStatus: AuthStatus;
+  login: (email: string, password: string) => Promise<string | null>;
+  register: (
+    name: string,
+    email: string,
+    password: string,
+  ) => Promise<string | null>;
 }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    const result =
+      mode === "login"
+        ? await login(email, password)
+        : await register(name, email, password);
+    setBusy(false);
+    if (result) setMessage(result);
+  };
   return (
     <section className="auth-page">
       <div className="eyebrow">ACESSO GRATUITO</div>
       <h1>Seu campus, no seu ritmo.</h1>
       <p>
-        O protótipo local permite testar fluxos de estudante e editor sem
-        coletar credenciais. A produção deve usar autenticação configurada e
-        regras de banco restritivas.
+        Sua conta salva o avanço das aulas, anotações e avaliações. Professores
+        autorizados recebem uma fila privada para acompanhar as tentativas.
       </p>
-      <div className="auth-cards">
-        <button onClick={() => chooseAccount("student")}>
-          <span>◯</span>
-          <strong>Entrar como estudante</strong>
-          <small>Progresso, notas e avaliação neste navegador.</small>
-        </button>
-        <button onClick={() => chooseAccount("editor")}>
-          <span>✦</span>
-          <strong>Entrar como editora</strong>
-          <small>Painel de conteúdo, importação e publicação local.</small>
-        </button>
-      </div>
+      {authStatus === "unconfigured" ? (
+        <div className="auth-connection-notice">
+          <strong>Conexão segura em preparação</strong>
+          <p>
+            O portal já está preparado para Supabase Auth. Falta apenas vincular
+            as chaves públicas do projeto e aplicar a migração de segurança.
+          </p>
+        </div>
+      ) : (
+        <form className="auth-form" onSubmit={submit}>
+          <div className="auth-mode" role="tablist" aria-label="Tipo de acesso">
+            <button
+              type="button"
+              className={mode === "login" ? "active" : ""}
+              onClick={() => setMode("login")}
+            >
+              Entrar
+            </button>
+            <button
+              type="button"
+              className={mode === "register" ? "active" : ""}
+              onClick={() => setMode("register")}
+            >
+              Criar conta
+            </button>
+          </div>
+          {mode === "register" && (
+            <label>
+              Nome completo
+              <input
+                required
+                minLength={2}
+                maxLength={120}
+                autoComplete="name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+          )}
+          <label>
+            E-mail
+            <input
+              required
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </label>
+          <label>
+            Senha
+            <input
+              required
+              type="password"
+              minLength={8}
+              autoComplete={
+                mode === "login" ? "current-password" : "new-password"
+              }
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <button
+            className="primary"
+            disabled={busy || authStatus === "checking"}
+          >
+            {busy
+              ? "Verificando acesso…"
+              : mode === "login"
+                ? "Entrar no campus"
+                : "Criar conta gratuita"}
+          </button>
+          {message && <p className="form-message">{message}</p>}
+        </form>
+      )}
       <p className="fine-print">
-        Modo demonstração: não use dados pessoais e não interprete o acesso
-        local como autenticação real.
+        Autenticação por e-mail. Seu papel acadêmico é definido no banco e não
+        pode ser alterado pelo navegador.
       </p>
     </section>
   );
@@ -947,6 +1337,7 @@ function Campus({
   setFontScale,
   dark,
   setDark,
+  syncMessage,
   logout,
 }: Shared & { logout: () => void }) {
   if (!account)
@@ -954,7 +1345,8 @@ function Campus({
       <section className="page">
         <h1>Seu campus</h1>
         <p>
-          Entre gratuitamente para salvar seu progresso local de demonstração.
+          Entre gratuitamente para salvar seu progresso, anotações e avaliações
+          em sua conta.
         </p>
         <button className="primary" onClick={() => navigate("/entrar")}>
           Entrar
@@ -970,10 +1362,10 @@ function Campus({
         <div className="eyebrow">MEU CAMPUS</div>
         <h1>Olá, {account.name}.</h1>
         <p>
-          Os dados abaixo estão armazenados neste navegador. A sincronização
-          online aguarda credenciais Firebase/Supabase configuradas pelo
-          responsável.
+          Seus registros ficam vinculados à sua conta e acompanham seu acesso em
+          diferentes dispositivos.
         </p>
+        {syncMessage && <p className="sync-message">{syncMessage}</p>}
       </div>
       <div className="campus-grid">
         <section className="panel">
@@ -1029,6 +1421,14 @@ function Campus({
                 <br />
                 {result.score}% ·{" "}
                 {result.passed ? "Aprovado" : "Pode tentar novamente"}
+                {result.feedback && (
+                  <>
+                    <br />
+                    <span className="feedback-preview">
+                      Devolutiva do professor: {result.feedback}
+                    </span>
+                  </>
+                )}
               </p>
             ))
           ) : (
@@ -1045,7 +1445,7 @@ function Campus({
           <h2>Notas privadas</h2>
           <p>
             {Object.values(notes).filter(Boolean).length
-              ? `${Object.values(notes).filter(Boolean).length} anotação(ões) local(is) salva(s).`
+              ? `${Object.values(notes).filter(Boolean).length} anotação(ões) sincronizada(s).`
               : "Crie anotações dentro de uma aula para revisitá-las aqui."}
           </p>
         </section>
@@ -1095,9 +1495,147 @@ function Campus({
           />
         </label>
         <button className="danger" onClick={logout}>
-          Sair da demonstração
+          Sair da conta
         </button>
       </section>
+    </section>
+  );
+}
+function TeacherReviews({
+  account,
+  attempts,
+  catalog,
+  navigate,
+  publishFeedback,
+}: {
+  account: Account | null;
+  attempts: TeacherAttempt[];
+  catalog: Catalog;
+  navigate: (to: string) => void;
+  publishFeedback: (
+    attemptId: string,
+    feedback: string,
+  ) => Promise<string | null>;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  if (!account || (account.role !== "teacher" && account.role !== "admin"))
+    return (
+      <section className="page narrow">
+        <div className="eyebrow">ÁREA ACADÊMICA</div>
+        <h1>Avaliações para professores.</h1>
+        <p>
+          Esta área exige uma conta docente atribuída a pelo menos um curso.
+        </p>
+        <button className="primary" onClick={() => navigate("/entrar")}>
+          Entrar em uma conta autorizada
+        </button>
+      </section>
+    );
+  const pending = attempts.filter((attempt) => !attempt.reviewed_at).length;
+  const publish = async (attempt: TeacherAttempt) => {
+    const feedback = (
+      drafts[attempt.id] ??
+      attempt.teacher_feedback ??
+      ""
+    ).trim();
+    if (!feedback) {
+      setMessage("Escreva uma devolutiva antes de publicar.");
+      return;
+    }
+    setSaving(attempt.id);
+    const error = await publishFeedback(attempt.id, feedback);
+    setSaving(null);
+    setMessage(error ?? "Devolutiva publicada para o estudante.");
+  };
+  return (
+    <section className="page teacher-page">
+      <div className="page-intro compact">
+        <div className="eyebrow">ÁREA DOCENTE</div>
+        <h1>Avaliações com contexto.</h1>
+        <p>
+          Você vê somente as tentativas dos cursos atribuídos ao seu perfil. A
+          devolutiva fica disponível no campus do estudante.
+        </p>
+      </div>
+      <div className="review-summary">
+        <div>
+          <span>Fila atual</span>
+          <strong>{pending}</strong>
+          <small>aguardando parecer</small>
+        </div>
+        <div>
+          <span>Total visível</span>
+          <strong>{attempts.length}</strong>
+          <small>tentativas nos seus cursos</small>
+        </div>
+      </div>
+      {message && <p className="sync-message">{message}</p>}
+      {attempts.length ? (
+        <div className="review-list">
+          {attempts.map((attempt) => {
+            const course = catalog.courses.find(
+              (candidate) => candidate.id === attempt.course_id,
+            );
+            return (
+              <article className="review-card" key={attempt.id}>
+                <div className="review-card-head">
+                  <div>
+                    <span className="eyebrow">
+                      {course?.code ?? attempt.course_id}
+                    </span>
+                    <h2>{attempt.student_name}</h2>
+                    <p>{course?.title ?? "Curso não encontrado"}</p>
+                  </div>
+                  <div
+                    className={attempt.passed ? "result-pass" : "result-retry"}
+                  >
+                    <strong>{attempt.score}%</strong>
+                    <span>{attempt.passed ? "Aprovado" : "Revisar"}</span>
+                  </div>
+                </div>
+                <p className="review-meta">
+                  Enviado em{" "}
+                  {new Date(attempt.submitted_at).toLocaleDateString("pt-BR")}
+                  {attempt.reviewed_at &&
+                    ` · Parecer publicado em ${new Date(attempt.reviewed_at).toLocaleDateString("pt-BR")}`}
+                </p>
+                <label>
+                  Devolutiva acadêmica
+                  <textarea
+                    value={drafts[attempt.id] ?? attempt.teacher_feedback ?? ""}
+                    onChange={(event) =>
+                      setDrafts((value) => ({
+                        ...value,
+                        [attempt.id]: event.target.value,
+                      }))
+                    }
+                    placeholder="Registre pontos fortes, referências para revisão e próximos passos."
+                  />
+                </label>
+                <button
+                  className="primary"
+                  disabled={saving === attempt.id}
+                  onClick={() => publish(attempt)}
+                >
+                  {saving === attempt.id
+                    ? "Publicando…"
+                    : "Publicar devolutiva"}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <section className="panel empty-review">
+          <h2>Nenhuma tentativa disponível.</h2>
+          <p>
+            Quando um administrador atribuir cursos ao seu perfil, as avaliações
+            dos estudantes aparecerão aqui com segurança.
+          </p>
+        </section>
+      )}
     </section>
   );
 }
@@ -1106,13 +1644,17 @@ function Quiz({
   courseId,
   account,
   results,
-  setResults,
+  recordAssessment,
 }: {
   questions: Catalog["questions"];
   courseId: string;
   account: Account | null;
   results: QuizResult;
-  setResults: (value: QuizResult) => void;
+  recordAssessment: (
+    courseId: string,
+    score: number,
+    answers: Record<string, number>,
+  ) => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -1132,7 +1674,7 @@ function Quiz({
         items.length) *
         100,
     );
-    setResults({ ...results, [courseId]: { score, passed: score >= 70 } });
+    recordAssessment(courseId, score, answers);
     setSubmitted(true);
   };
   return (
@@ -1350,18 +1892,17 @@ function Admin({ catalog, account, setCatalog, navigate }: Shared) {
   const [youtube, setYoutube] = useState("");
   const [approved, setApproved] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  if (account?.role !== "editor")
+  if (account?.role !== "editor" && account?.role !== "admin")
     return (
       <section className="page narrow">
         <div className="eyebrow">ÁREA PROTEGIDA</div>
         <h1>Acesso restrito ao painel editorial.</h1>
         <p>
-          O modo de demonstração exige perfil de editora. Em produção, esta
-          proteção deve ser duplicada nas regras do banco e em funções
-          privilegiadas.
+          Este painel exige um perfil editorial autorizado. A permissão também
+          deve ser atribuída e validada no banco, fora do navegador.
         </p>
         <button className="primary" onClick={() => navigate("/entrar")}>
-          Entrar como editora de demonstração
+          Entrar em uma conta editorial
         </button>
       </section>
     );
