@@ -226,6 +226,9 @@ function App() {
         ]);
 
       if (!mounted) return;
+      if (window.location.hash.includes("access_token=")) {
+        window.location.hash = "/";
+      }
       setAccount(nextAccount);
       setAuthStatus("ready");
       if (
