@@ -111,6 +111,14 @@ const appendMissing = <T extends { id: string }>(primary: T[], extra: T[]) => [
   ...primary,
   ...extra.filter((item) => !primary.some((current) => current.id === item.id)),
 ];
+const overlayById = <T extends { id: string }>(base: T[], overlay: T[]) => {
+  const overrides = new Map(overlay.map((item) => [item.id, item]));
+  const baseIds = new Set(base.map((item) => item.id));
+  return [
+    ...base.map((item) => overrides.get(item.id) ?? item),
+    ...overlay.filter((item) => !baseIds.has(item.id)),
+  ];
+};
 const moduleFromRemote = (module: EditorialModule) => ({
   id: module.id,
   courseId: module.course_id,
@@ -258,11 +266,11 @@ function App() {
     });
   };
   const visibleCatalog = useMemo(() => {
-    const modules = appendMissing(
+    const modules = overlayById(
       catalog.modules,
       remoteCatalog.modules.map(moduleFromRemote),
     );
-    const lessons = appendMissing(
+    const lessons = overlayById(
       catalog.lessons,
       remoteCatalog.lessons.map(lessonFromRemote),
     );
